@@ -194,6 +194,11 @@ impl TableWindow {
                                     if label_resp.double_clicked() || header_resp.double_clicked() {
                                         new_editing_col = Some((ci, col_name.clone()));
                                     }
+                                    let hovered = ui.rect_contains_pointer(ui.max_rect());
+                                    let x_resp = ui.add_visible(hovered, egui::Button::new(egui_phosphor::regular::X).small().fill(egui::Color32::from_rgb(255, 180, 180)));
+                                    if x_resp.clicked() {
+                                        actions.push(TableAction::DropColumn(ci));
+                                    }
                                     header_resp.context_menu(|ui| {
                                         if ui.button("Rename column").clicked() {
                                             new_editing_col = Some((ci, self.data.columns[ci].clone()));
@@ -212,7 +217,7 @@ impl TableWindow {
                             });
                         }
                         header.col(|ui| {
-                            if ui.small_button(egui_phosphor::regular::PLUS).clicked() {
+                            if ui.small_button(format!("{} col", egui_phosphor::regular::PLUS)).clicked() {
                                 actions.push(TableAction::AddColumn);
                             }
                         });
@@ -266,7 +271,7 @@ impl TableWindow {
                                     row_hovered = true;
                                 }
                                 if let Some(&rid) = self.data.row_ids.get(ri) {
-                                    let x_resp = ui.add_visible(row_hovered, egui::Button::new(egui_phosphor::regular::X).small());
+                                    let x_resp = ui.add_visible(row_hovered, egui::Button::new(egui_phosphor::regular::X).small().fill(egui::Color32::from_rgb(255, 180, 180)));
                                     if x_resp.clicked() {
                                         actions.push(TableAction::DeleteRow(rid));
                                     }

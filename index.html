@@ -122,7 +122,9 @@
                         delete window._ddb_pending_drops[input.filename];
 
                         await db.registerFileHandle(input.filename, file, 2, true);
-                        await db.runQuery(connId, 'CREATE TABLE "' + input.name + '" AS SELECT * FROM read_csv_auto(\'' + input.filename + '\')');
+                        var ext = input.filename.split('.').pop().toLowerCase();
+                        var reader = ext === 'parquet' ? 'read_parquet' : ext === 'json' || ext === 'jsonl' || ext === 'ndjson' ? 'read_json_auto' : 'read_csv_auto';
+                        await db.runQuery(connId, 'CREATE TABLE "' + input.name + '" AS SELECT * FROM ' + reader + '(\'' + input.filename + '\')');
                         var result = await conn.query('SELECT rowid, * FROM "' + input.name + '" LIMIT 10000');
                         await db.dropFile(input.filename);
                         return JSON.stringify(arrowToJson(result));

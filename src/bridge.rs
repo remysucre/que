@@ -26,8 +26,19 @@ pub fn load_file(db: &dyn Db, path: &str) -> Result<(String, TableData), String>
 
     let table_name = dedup_table_name(db, &safe_name);
 
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let reader = match ext.as_str() {
+        "parquet" => "read_parquet",
+        "json" | "jsonl" | "ndjson" => "read_json_auto",
+        _ => "read_csv_auto",
+    };
+
     db.execute(&format!(
-        "CREATE TABLE \"{table_name}\" AS SELECT * FROM read_csv_auto('{path}')"
+        "CREATE TABLE \"{table_name}\" AS SELECT * FROM {reader}('{path}')"
     ))
     .map_err(|e| format!("Failed to load file: {e}"))?;
 

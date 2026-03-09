@@ -19,142 +19,28 @@ impl QueryResult {
     }
 }
 
-/// Database abstraction so native and WASM builds share the same UI code.
 pub trait Db {
     fn execute(&self, sql: &str) -> Result<(), String>;
     fn query(&self, sql: &str) -> Result<QueryResult, String>;
-    fn is_ready(&self) -> bool {
-        true
-    }
-    fn init_error(&self) -> Option<String> {
-        None
-    }
-
-    /// Load a dropped file by filename (WASM only — uses registerFileHandle).
-    fn load_dropped_file(&self, _table_name: &str, _filename: &str) -> Result<QueryResult, String> {
-        Err("not supported".to_string())
-    }
-
-    /// Run a batch of statements, then optionally run a final query.
-    /// Returns the query result (or empty if no final query).
-    /// On native this just runs them sequentially. On WASM this sends
-    /// the whole batch to JS in one async call so ordering is preserved.
-    fn batch(&self, stmts: &[String], final_query: Option<&str>) -> Result<QueryResult, String> {
-        for sql in stmts {
-            self.execute(sql)?;
-        }
-        if let Some(q) = final_query {
-            self.query(q)
-        } else {
-            Ok(QueryResult::default())
-        }
-    }
+    fn is_ready(&self) -> bool;
+    fn init_error(&self) -> Option<String>;
+    fn load_dropped_file(&self, table_name: &str, filename: &str) -> Result<QueryResult, String>;
+    fn batch(&self, stmts: &[String], final_query: Option<&str>) -> Result<QueryResult, String>;
 }
 
 // ---------------------------------------------------------------------------
-// Native implementation
+// WASM implementation (duckdb-wasm, async via Worker)
 // ---------------------------------------------------------------------------
-#[cfg(not(target_arch = "wasm32"))]
-mod native {
-    use super::*;
-    use duckdb::Connection;
-
-    pub struct NativeDb {
-        conn: Connection,
-    }
-
-    impl NativeDb {
-        pub fn new() -> Self {
-            Self {
-                conn: Connection::open_in_memory().expect("Failed to open DuckDB"),
-            }
-        }
-    }
-
-    impl Db for NativeDb {
-        fn execute(&self, sql: &str) -> Result<(), String> {
-            self.conn.execute_batch(sql).map_err(|e| format!("{e}"))
-        }
-
-        fn query(&self, sql: &str) -> Result<QueryResult, String> {
-            let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
-            let mut result = stmt.query([]).map_err(|e| e.to_string())?;
-
-            let col_count = result.as_ref().unwrap().column_count();
-            let columns: Vec<String> = (0..col_count)
-                .map(|i| {
-                    result
-                        .as_ref()
-                        .unwrap()
-                        .column_name(i)
-                        .map_or("?".to_string(), |v| v.to_string())
-                })
-                .collect();
-
-            let mut rows = Vec::new();
-            let row_ids = Vec::new();
-            while let Ok(Some(row)) = result.next() {
-                let mut vals = Vec::with_capacity(col_count);
-                for i in 0..col_count {
-                    let val: String = row
-                        .get::<_, duckdb::types::Value>(i)
-                        .map(|v| format_value(&v))
-                        .unwrap_or_default();
-                    vals.push(val);
-                }
-                rows.push(vals);
-            }
-
-            Ok(QueryResult { columns, rows, row_ids })
-        }
-    }
-
-    fn format_value(v: &duckdb::types::Value) -> String {
-        match v {
-            duckdb::types::Value::Null => String::new(),
-            duckdb::types::Value::Boolean(b) => b.to_string(),
-            duckdb::types::Value::TinyInt(n) => n.to_string(),
-            duckdb::types::Value::SmallInt(n) => n.to_string(),
-            duckdb::types::Value::Int(n) => n.to_string(),
-            duckdb::types::Value::BigInt(n) => n.to_string(),
-            duckdb::types::Value::HugeInt(n) => n.to_string(),
-            duckdb::types::Value::UTinyInt(n) => n.to_string(),
-            duckdb::types::Value::USmallInt(n) => n.to_string(),
-            duckdb::types::Value::UInt(n) => n.to_string(),
-            duckdb::types::Value::UBigInt(n) => n.to_string(),
-            duckdb::types::Value::Float(n) => n.to_string(),
-            duckdb::types::Value::Double(n) => n.to_string(),
-            duckdb::types::Value::Text(s) => s.clone(),
-            _ => format!("{v:?}"),
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use native::NativeDb;
-
-// ---------------------------------------------------------------------------
-// WASM implementation
-//
-// duckdb-wasm is fully async (Worker-based). egui update() is synchronous.
-//
-// Strategy:
-// - execute(): fire-and-forget via spawn_local
-// - query(): spawns async call, caches result, returns cached or empty
-// - batch(): spawns a single async call for multiple stmts + final query,
-//   preserving execution order
-// ---------------------------------------------------------------------------
-#[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::*;
-    use eframe::wasm_bindgen::prelude::*;
-    use eframe::wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
 
     fn call_js_sync(fn_name: &str, arg: &str) -> Result<String, String> {
-        let window = eframe::web_sys::window().ok_or("no window")?;
+        let window = web_sys::window().ok_or("no window")?;
         let func = js_sys::Reflect::get(&window, &JsValue::from_str(fn_name))
             .map_err(|_| format!("JS function {fn_name} not found"))?;
         let func: js_sys::Function = func
@@ -169,7 +55,7 @@ mod wasm {
     }
 
     fn call_js_async_raw(fn_name: &str, arg: &str) -> Result<js_sys::Promise, String> {
-        let window = eframe::web_sys::window().ok_or("no window")?;
+        let window = web_sys::window().ok_or("no window")?;
         let func = js_sys::Reflect::get(&window, &JsValue::from_str(fn_name))
             .map_err(|_| format!("JS function {fn_name} not found"))?;
         let func: js_sys::Function = func
@@ -345,5 +231,4 @@ mod wasm {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 pub use wasm::WasmDb;

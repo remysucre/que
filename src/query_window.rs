@@ -42,7 +42,7 @@ impl QueryWindow {
                     self.pending_query = None;
                     ran_from_poll = true;
                 }
-                Ok(_) => { ctx.request_repaint(); }
+                Ok(_) => { ctx.request_repaint_after(std::time::Duration::from_millis(16)); }
                 Err(e) => {
                     self.result = Some(Err(e));
                     self.pending_query = None;

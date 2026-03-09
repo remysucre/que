@@ -1,21 +1,6 @@
-#[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result {
-    env_logger::init();
+use wasm_bindgen::JsCast as _;
 
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 600.0])
-            .with_drag_and_drop(true),
-        ..Default::default()
-    };
-
-    eframe::run_native("¿Qué?", options, Box::new(|cc| Ok(Box::new(que::app::QueApp::new(cc)))))
-}
-
-#[cfg(target_arch = "wasm32")]
 fn main() {
-    use eframe::wasm_bindgen::JsCast as _;
-
     eframe::WebLogger::init(log::LevelFilter::Debug).ok();
 
     wasm_bindgen_futures::spawn_local(async {

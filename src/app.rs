@@ -7,7 +7,6 @@ use eframe::egui;
 pub struct QueApp {
     db: Box<dyn Db>,
     tables: Vec<TableWindow>,
-    next_table_id: usize,
     query_windows: Vec<QueryWindow>,
     error: Option<String>,
     /// Pending file loads waiting for async results (WASM): (table_name, filename)
@@ -20,16 +19,11 @@ impl QueApp {
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let db: Box<dyn Db> = Box::new(crate::db::NativeDb::new());
-
-        #[cfg(target_arch = "wasm32")]
         let db: Box<dyn Db> = Box::new(crate::db::WasmDb::new());
 
         Self {
             db,
             tables: Vec::new(),
-            next_table_id: 1,
             query_windows: Vec::new(),
             error: None,
             pending_loads: Vec::new(),
@@ -44,56 +38,28 @@ impl QueApp {
             ctx.input(|i| i.raw.dropped_files.clone());
 
         for file in dropped_files {
-            // On native, we have a file path. On WASM, we have bytes.
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let path = if let Some(path) = &file.path {
-                    match path.to_str() {
-                        Some(p) => p.to_string(),
-                        None => {
-                            self.error = Some("Invalid file path".to_string());
-                            continue;
-                        }
-                    }
-                } else {
-                    continue;
-                };
+            let filename = file.name.clone();
+            let name_hint = std::path::Path::new(&filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("table");
+            let table_name: String = name_hint
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .collect();
+            let table_name = if table_name.is_empty() { "table".to_string() } else { table_name };
 
-                match bridge::load_file(self.db.as_ref(), &path) {
-                    Ok((name, data)) => {
-                        self.tables.push(TableWindow::new(name, data));
-                    }
-                    Err(e) => {
-                        self.error = Some(e);
-                    }
+            match self.db.load_dropped_file(&table_name, &filename) {
+                Ok(result) if !result.columns.is_empty() => {
+                    let data = bridge::parse_rowid_result(result);
+                    self.tables.push(TableWindow::new(table_name, data));
                 }
-            }
-
-            #[cfg(target_arch = "wasm32")]
-            {
-                let filename = file.name.clone();
-                let name_hint = std::path::Path::new(&filename)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("table");
-                let table_name: String = name_hint
-                    .chars()
-                    .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
-                    .collect();
-                let table_name = if table_name.is_empty() { "table".to_string() } else { table_name };
-
-                match self.db.load_dropped_file(&table_name, &filename) {
-                    Ok(result) if !result.columns.is_empty() => {
-                        let data = bridge::parse_rowid_result(result);
-                        self.tables.push(TableWindow::new(table_name, data));
-                    }
-                    Ok(_) => {
-                        // WASM: result pending, poll next frame
-                        self.pending_loads.push((table_name, filename));
-                    }
-                    Err(e) => {
-                        self.error = Some(e);
-                    }
+                Ok(_) => {
+                    // Result pending, poll next frame
+                    self.pending_loads.push((table_name, filename));
+                }
+                Err(e) => {
+                    self.error = Some(e);
                 }
             }
         }
@@ -113,7 +79,7 @@ impl eframe::App for QueApp {
                     self.tables.push(TableWindow::new(table_name.clone(), data));
                     completed_loads.push(idx);
                 }
-                Ok(_) => { ctx.request_repaint(); }
+                Ok(_) => { ctx.request_repaint_after(std::time::Duration::from_millis(16)); }
                 Err(e) => {
                     self.error = Some(e);
                     completed_loads.push(idx);
@@ -150,20 +116,7 @@ impl eframe::App for QueApp {
             .default_width(160.0)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("Tables");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button(egui_phosphor::regular::PLUS).clicked() {
-                        let id = self.next_table_id;
-                        self.next_table_id += 1;
-                        let name = format!("table_{id}");
-                        match bridge::create_empty_table(self.db.as_ref(), &name) {
-                            Ok(data) => self.tables.push(TableWindow::new(name, data)),
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                    });
-                });
+                ui.heading("Tables");
                 ui.separator();
                 let mut remove_table_idx = None;
                 let mut finish_rename_idx = None;
@@ -278,7 +231,7 @@ impl eframe::App for QueApp {
                             );
                         } else {
                             ui.label("Initializing database...");
-                            ctx.request_repaint();
+                            ctx.request_repaint_after(std::time::Duration::from_millis(16));
                         }
                     } else {
                         ui.label("Drop a data file here");
